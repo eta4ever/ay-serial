@@ -6,9 +6,6 @@
 comPort = "COM6"
 baudRate = 38400
 
-# тестовый тон (писк по трем каналам)
-# testTone = [0xFE, 0x00, 0xFE, 0x00, 0xFE, 0x00, 0x00, 0xF8, 0x0F, 0x0F, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00]
-
 # тишина
 silenceTone = [0x00 for dummyCounter in range(0,16)]
 
@@ -114,6 +111,9 @@ for frame in range(0,frameCount):
 	# задержка 20 мс, чтобы получилась частота обновления 50 Гц
 
 	time.sleep(0.02)
+
+# заглушить
+serialConn.write(silenceTone)
 
 # закрыть порт
 serialConn.close()

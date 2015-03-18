@@ -1,7 +1,21 @@
-﻿#define F_CPU 8000000UL
-#include <avr/io.h>
-#include <util/delay.h>
-#include <string.h>
+﻿/*
+1. Дать запрос на хост
+2. Принять от хоста 256 байт, записать их в кольцевой буфер
+3. Дать запрос на хост
+4. Принять от хоста 256 байт, записать их в кольцевой буфер
+
+5. Начать играть.
+
+6. По достижению позиции 256 - запросить у хоста еще.
+7. Прерыванием прининять 256 байт.
+8. По достижению 512 - запросить у хоста еще.
+9. GOTO 6
+*/
+
+#define F_CPU 8000000UL // 8 МГц от встроенного генератора
+#include <avr/io.h> // ввод-вывод
+#include <util/delay.h> // задержки
+#include <avr/interrupt.h> // прерывания
 
 	//DA0	PB2
 	//DA1	PB3
@@ -15,37 +29,49 @@
 	//BC2	+Vcc
 	//BDIR	PC5
 
-unsigned char buffer[16]; // буфер принятых данных
-unsigned char bytesReceived; // Счетчик принятых байт
+const unsigned int bufferSize = 512; // размер буфера
+unsigned char buffer[512]; // буфер 512 байт
+unsigned int readPos = 0; // позиция чтения из буфера
+unsigned int writePos = 0; // позиция записи в буфер
+const unsigned char message = 8; // сообщение для хоста
 
-// Инициализация
-void setup(void)
+// увеличить на заданное значение позицию чтения, учесть кольцо
+void readInc(unsigned char increment)
 {
-	// режим портов
-	DDRB = 0b11111111;
-	DDRC = 0b00111111;
+	readPos += increment;
+	if (readPos >= bufferSize)
+	{
+		readPos -= bufferSize;
+	}
+}
 
-	
-	// настройка последовательного интерфейса
+// увеличить на заданное значение позицию записи, учесть кольцо
+void writeInc(unsigned char increment)
+{
+	writePos += increment;
+	if (writePos >= bufferSize)
+	{
+		writePos -= bufferSize;
+	}
+}
 
-	// устанавливаем стандартный режим 8N1
-	UCSRC=(1<<URSEL)|(3<<UCSZ0);
+// отправить на хост запрос на выдачу 256 байт
+void askForBytes()
+{
+	while ((UCSRA & (1 << UDRE)) == 0) {}; // Ждать свободного буфера
+    UDR = message; // Отправить на хост запрос
+}
 
-	// устанавливаем скорость 38400.
-	// тут курим AVR Baudrate Calculator, почему
-	// не все скорости одинаково полезны
-	//UBRRL=25;
-	UBRRL = 12;
-	UBRRH=0;
-
-	// разрешить прием и передачу по USART
-	// RXENable, TXENable в регистре UCSRB
-	UCSRB=(1<<RXEN)|(1<<TXEN);
-
+// обработчик прерывания. Пишет байт в текущую позицию записи в буфер.
+ISR(USART_RXC_vect)
+{
+	buffer[writePos] = UDR;
+	writeInc(1);
 }
 
 // запись значения в наш "порт", состоящий из частей PB и PC
-void valToPort(unsigned int val){
+void valToPort(unsigned int val)
+{
 
 	 // для порта B взять младший полубайт
 	 // и сдвинуть на 2 влево , т.к. надо выводить начиная с PB2	
@@ -85,6 +111,47 @@ void sendToAY(unsigned int addr, unsigned int data)
 	PORTC &= 0b11011111;
 }
 
+// Инициализация
+void setup(void)
+{
+	// режим портов
+	DDRB = 0b11111111;
+	DDRC = 0b00111111;
+
+	sei(); // включение прерываний
+
+	// настройка последовательного интерфейса
+
+	// устанавливаем стандартный режим 8N1
+	UCSRC=(1<<URSEL)|(3<<UCSZ0);
+
+	// устанавливаем скорость 38400.
+	// тут курим AVR Baudrate Calculator, почему
+	// не все скорости одинаково полезны
+	//UBRRL=25;
+	UBRRL = 12;
+	UBRRH = 0;
+
+	// разрешить прием и передачу по USART
+	// RXENable, TXENable в регистре UCSRB
+	// и разрешить прерывание по приему (RXCIE)
+	UCSRB=(1<<RXEN)|(1<<TXEN)|(1<<RXCIE);
+
+	// пусть все устаканится
+	_delay_ms(100);
+
+	// запросить первые 256 байт
+	askForBytes();
+
+	// подождать
+	_delay_ms(100);
+
+	// запросить еще 256 байт
+	askForBytes();
+
+	// подождать
+	_delay_ms(100);
+}
 
 int main(void)
 {
@@ -92,35 +159,46 @@ int main(void)
 
 	while(1)
 	{
-	// принимаем 16 байт
-		for (bytesReceived=0; bytesReceived<16; bytesReceived++)
-		{
-			// ждем приемник
-			while(!(UCSRA & (1<<RXC))) {}
 
-			// забираем байт
-			buffer[bytesReceived] = UDR;
+		// коррекция некоторых байт, т.к. не всем регистрам надо 8 бит
+		int readPosTmp = readPos; // фиксировать позицию чтения
+		
+		readInc(1); //1
+		buffer[readPos] &= 0x0f;
+		readInc(2); //3
+		buffer[readPos] &= 0x0f;
+		readInc(2); //5
+		buffer[readPos] &= 0x0f;
+		readInc(1); //6
+		buffer[readPos] &= 0x1f;
+		readInc(2); //8
+		buffer[readPos] &= 0x1f;
+		readInc(1); //9
+		buffer[readPos] &= 0x1f;
+		readInc(1); //10
+		buffer[readPos] &= 0x1f;
+		readInc(3); //13
+		buffer[readPos] &= 0x0f;
+
+		readPos = readPosTmp; // вернуть позицию чтения		
+
+		// записать в регистры 0-13. 15-16 не надо
+		for (unsigned char byteCount=0; byteCount<14; byteCount++)
+		{
+			sendToAY(byteCount, buffer[readPos]);
+			readInc(1);
 		}
 
-		sendToAY(0x00, buffer[0]); // Period voice A
-		sendToAY(0x01, buffer[1]&0x0f); // Fine period voice A
+		// пропустить регистры 15-16
+		readInc(2);
 
-		sendToAY(0x02, buffer[2]); // Period voice B
-		sendToAY(0x03, buffer[3]&0x0f); // Fine period voice B
+		// проверить позицию чтения, если 256 или 512 (0) - запросить данные
+		if ((readPos == 256)|(readPos == 0))
+		{
+			askForBytes();
+		}
 
-		sendToAY(0x04, buffer[4]); // Period voice C
-		sendToAY(0x05, buffer[5]&0x0f); // Fine Period voice C
-
-		sendToAY(0x06, buffer[6]&0x1f); // Noise period
-
-		sendToAY(0x07, buffer[7]); // Mixer control 
-
-		sendToAY(0x08, buffer[8]&0x1f); // Volume control A
-		sendToAY(0x09, buffer[9]&0x1f); // Volume control B
-		sendToAY(0x0A, buffer[10]&0x1f); // Volume control C
-
-		sendToAY(0x0B, buffer[11]); // Envelope high period
-		sendToAY(0x0C, buffer[12]); // Envelope low period
-		sendToAY(0x0D, buffer[13]&0x0f); // Envelope shape 
+		// пауза 20 мс
+		_delay_ms(20);
     }
 }

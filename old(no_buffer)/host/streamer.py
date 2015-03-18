@@ -6,9 +6,6 @@
 comPort = "COM6"
 baudRate = 38400
 
-# сообщение, по получению которого надо отправить 256 байт
-message = 8
-
 # тишина
 silenceTone = [0x00 for dummyCounter in range(0,16)]
 
@@ -100,22 +97,23 @@ serialConn = serial.Serial(comPort, baudRate, timeout = 1)
 
 print('Now Playing!')
 
-currentPos = 0 # текущая позиция в большом массиве
-endPos = frameCount * 16 # конечная позиция
+# и запулить в него все это дело
 
-while (currentPos < endPos):
+registerStates = [0 for dummyCounter in range(0,16)]
 
-	# ждать запроса
-	request = serialConn.read()
-	while ( not request ):
-		request = serialConn.read()
+for frame in range(0,frameCount):
 
-	# по получению запроса отправить в порт 256 байт из массива
-	for currByte in range(0,256):
-		regState = [registerDump[currentPos + currByte],]
-		serialConn.write(regState)
+	for register in range(0, 16):
+		registerStates[register] = registerDump[frame*16 + register]
 
-	currentPos += 256
+	serialConn.write(registerStates)
+
+	# задержка 20 мс, чтобы получилась частота обновления 50 Гц
+
+	time.sleep(0.02)
+
+# заглушить
+serialConn.write(silenceTone)
 
 # закрыть порт
 serialConn.close()

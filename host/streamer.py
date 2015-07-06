@@ -1,121 +1,85 @@
-﻿import serial, struct, time
-# from datetime import datetime
+﻿#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# py3
+# un.def, 2015
+
+import sys
+import time
+import math
+import argparse
+import serial
+import ymfile
+
+parser = argparse.ArgumentParser(description='AY-serial streamer')
+parser.add_argument(    '-p', '--port',
+                        required=True,
+                        metavar='port',
+                        help='serial port device (required)')
+parser.add_argument(    '-b', '--baudrate',
+                        type=int,
+                        default=38400,
+                        metavar='bd',
+                        help='serial port baud rate (default: 38400)')
+parser.add_argument(    '-u', '--unbuf',
+                        action='store_true',
+                        help='unbuffered mode')
+parser.add_argument(    '-v', '--verbose',
+                        action='store_true',
+                        help='show all file info (as dict)')
+parser.add_argument(    'file',
+                        help='.ym file')
+args = parser.parse_args()
+
+silence = bytearray(16)
+
+def wait_request(conn):
+    while True:
+        request = conn.read()
+        if request == b'\x08':
+            return
 
 
-# параметры COM порта
-comPort = "COM6"
-baudRate = 38400
+with open(args.file, 'rb') as f:
+    try:
+        ym = ymfile.load(f)
+    except ymfile.YMFileException as e:
+        print("Error:", e)
+        sys.exit(1)
 
-# сообщение, по получению которого надо отправить 256 байт
-message = 8
+if args.verbose:
+    for k in sorted(ym):
+        if k != 'data':
+            print("{0}: {1}".format(k, ym[k]))
+else:
+    print("Song ......", ym['song_name'])
+    print("Author ....", ym['author'])
+    print("Comment ...", ym['comment'])
+    mins, secs = ym['length'] // 60, ym['length'] % 60
+    print("Length .... {0:02d}:{1:02d}".format(mins, secs))
 
-# тишина
-silenceTone = [0x00 for dummyCounter in range(0,16)]
+conn = serial.Serial(args.port, args.baudrate)
 
-def readNullTermString(fileConn):
-	"""
-	Для обработки заголовка YM-файла. Там используется несколько NT-строк.
-	Читает символы, прибавляет к строке, пока не найдет нулевой.
-	"""
-	currString = ''
-	currChar = fileConn.read(1)
+if args.unbuf:
+    sleep = 1 / ym['frame_freq']
+    for frame in range(ym['frames']):
+        fd = ymfile.get_frame(ym['data'], frame, ym['interleaved'])
+        conn.write(fd)
+        time.sleep(sleep)
+    conn.write(silence)
+else:
+    frame = 0
+    frames = math.ceil(ym['frames'] / 16) * 16 + 32
+    conn.flushInput()
+    while frame < frames:
+        wait_request(conn)
+        buff = bytearray()
+        for i in range(16):
+            if frame >= ym['frames']:
+                fdata = silence
+            else:
+                fdata = ymfile.get_frame(ym['data'], frame, ym['interleaved'])
+            buff.extend(fdata)
+            frame += 1
+        conn.write(buff)
 
-	# тут на всякий случай еще условие на EoF, а то мало ли
-	while ( (currChar != b'\x00') and (currChar)):
-		currString += chr(struct.unpack('b',currChar)[0])
-		currChar = fileConn.read(1)
-	return currString
-
-def readAllInterleaved(fileConn, frameCount):
-	"""
-	Запускается после обработки заголовка. Возвращает "последовательный" дамп регистров.
-	Обрабатываемый массив данных выглядит как "все состояния регистра 0, 
-	все состояния регистра 1..." и т.д. до 15. Это чтобы файл паковался знатно.
-	Нам же надо пачки состояний регистров.
-	"""
-
-	registerDump = []
-
-	# в качестве базы используем текущую позицию, полученную после обработки заголовка
-	baseOffset = fileConn.tell() 
-
-	# интерпретируем байты как unsigned char (C) в Integer
-	for frame in range(0,frameCount):
-		for register in range(0,16):
-			fileConn.seek(baseOffset + frameCount*register + frame)
-			registerDump.append(struct.unpack('B',fileConn.read(1))[0])
-
-	return registerDump
-
-testFile = '1.ym'
-fileConn = open(testFile, 'rb')
-
-fileConn.read(4) # ID типа файла, напр. YM6!
-fileConn.read(8) # Проверочная строка LeOnArD!
-
-# кол-во фреймов в файле. 4 байта Big Endian (>L) в unsigned Long (L)
-# unsigned long - это по-сишному, в Питоне будет integer
-frameCount = struct.unpack('>L',fileConn.read(4))[0]
-
-fileConn.read(4) # какие-то атрибуты
-
-# количество сэмплов digidrum, в unsigned short (H)
-# unsigned short - это по-сишному, в Питоне будет integer
-digidrumCount = struct.unpack ('H',fileConn.read(2))[0]
- 
-# частота YM в Гц, 1.7M - Speccy, 2M - Atari
-YMClock = struct.unpack('>L',fileConn.read(4))[0]
-
-fileConn.read(2) # частота обновления, обычно 50 Гц
-fileConn.read(4) # loop frame
-fileConn.read(2) # кол-во дополнительных байт заголовка. Сейчас всегда 0, игнор
-
-# дальше пропустить cэмплы digidrums. 
-for digidrum in range (0, digidrumCount):
-	sampleSize = struct.unpack('>L',fileConn.read(4))[0] # размер сэмпла
-	fileConn.read(sampleSize) # сэмпл
-
-trackName = readNullTermString(fileConn) # название трека
-trackAuthor = readNullTermString(fileConn) # автор
-trackComment = readNullTermString(fileConn) # комментарий
-
-print('Frames:',frameCount)
-print('YM Clock:',YMClock,'Hz')
-print('Digidrum samples:', digidrumCount)
-print('Track:', trackName)
-print('Author:', trackAuthor)
-print('Comment:', trackComment)
-
-# обработка заголовка закончена, дальше пошли данные
-
-print('Processing interleaved data...')
-registerDump = readAllInterleaved(fileConn, frameCount)
-print('...done reading', len(registerDump)//16,'frames!')
-
-# закрыть файл 
-fileConn.close()
-
-# открыть последовательный порт
-serialConn = serial.Serial(comPort, baudRate, timeout = 1)
-
-print('Now Playing!')
-
-currentPos = 0 # текущая позиция в большом массиве
-endPos = frameCount * 16 # конечная позиция
-
-while (currentPos < endPos):
-
-	# ждать запроса
-	request = serialConn.read()
-	while ( not request ):
-		request = serialConn.read()
-
-	# по получению запроса отправить в порт 256 байт из массива
-	for currByte in range(0,256):
-		regState = [registerDump[currentPos + currByte],]
-		serialConn.write(regState)
-
-	currentPos += 256
-
-# закрыть порт
-serialConn.close()
+conn.close()

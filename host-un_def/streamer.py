@@ -23,6 +23,11 @@ parser.add_argument(    '-b', '--baudrate',
 parser.add_argument(    '-u', '--unbuf',
                         action='store_true',
                         help='unbuffered mode')
+
+parser.add_argument(    '-l', '--loop',
+                        action='store_true',
+                        help='looped playback')
+
 parser.add_argument(    '-v', '--verbose',
                         action='store_true',
                         help='show all file info (as dict)')
@@ -60,26 +65,43 @@ else:
 conn = serial.Serial(args.port, args.baudrate)
 
 if args.unbuf:
+
+    start_frame = 0
     sleep = 1 / ym['frame_freq']
-    for frame in range(ym['frames']):
-        fd = ymfile.get_frame(ym['data'], frame, ym['interleaved'])
-        conn.write(fd)
-        time.sleep(sleep)
-    conn.write(silence)
+    while True:
+        for frame in range(start_frame, ym['frames']):
+            fd = ymfile.get_frame(ym['data'], frame, ym['interleaved'])
+            conn.write(fd)
+            time.sleep(sleep)
+        if args.loop:
+            start_frame = ym['loop_frame']
+        else:
+            conn.write(silence)
+            break
+
 else:
+
     frame = 0
-    frames = math.ceil(ym['frames'] / 16) * 16 + 32
     conn.flushInput()
-    while frame < frames:
+    while True:
         wait_request(conn)
         buff = bytearray()
         for i in range(16):
-            if frame >= ym['frames']:
+            if frame >= ym['frames'] and not args.loop:
                 fdata = silence
             else:
+                if frame >= ym['frames']:
+                    frame = ym['loop_frame']
                 fdata = ymfile.get_frame(ym['data'], frame, ym['interleaved'])
             buff.extend(fdata)
             frame += 1
         conn.write(buff)
+        if frame >= ym['frames'] and not args.loop:
+            buffer_silence = silence * 16
+            wait_request(conn)
+            conn.write(buffer_silence)
+            wait_request(conn)
+            conn.write(buffer_silence)
+            break
 
 conn.close()
